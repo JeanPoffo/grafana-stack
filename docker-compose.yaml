@@ -1,0 +1,106 @@
+services:
+  # ─────────────────────────────────────────
+  # OpenTelemetry Collector
+  # Ponto de entrada único da sua aplicação Spring
+  # ─────────────────────────────────────────
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otelcol
+    command: ["--config=/etc/otelcol/otelcol.yaml"]
+    volumes:
+      - ./config/otelcol/otelcol.yaml:/etc/otelcol/otelcol.yaml:ro
+    ports:
+      - "4317:4317"    # OTLP gRPC   ← sua app Spring aponta aqui
+      - "4318:4318"    # OTLP HTTP   ← ou aqui
+      - "8888:8888"    # Métricas internas do próprio Collector
+      - "13133:13133"  # Health check
+      - "55679:55679"  # zPages (debug via browser)
+    networks:
+      - observability
+    depends_on:
+      mimir:
+        condition: service_started
+      tempo:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # Grafana Mimir — métricas
+  # ─────────────────────────────────────────
+  # ─────────────────────────────────────────
+  # Grafana Mimir — métricas (Prometheus-compatible)
+  # ─────────────────────────────────────────
+  mimir:
+    image: grafana/mimir:3.0.4
+    container_name: mimir
+    command: ["-config.file=/etc/mimir/mimir.yaml"]
+    volumes:
+      - ./config/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/data/mimir
+    ports:
+      - "9009:9009"   # HTTP API / remote_write / query
+      - "9095:9095"   # gRPC
+    networks:
+      - observability
+    restart: unless-stopped
+ 
+  # ─────────────────────────────────────────
+  # Grafana Tempo — traces distribuídos
+  # (recebe apenas do Collector, internamente)
+  # ─────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.10.3
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./config/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP API + query (Grafana)
+    networks:
+      - observability
+    depends_on:
+      mimir:
+        condition: service_started
+    restart: unless-stopped
+ 
+  # ─────────────────────────────────────────
+  # Grafana — visualização e dashboards
+  # ─────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:12.4.1
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor metricsSummary
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_LOG_LEVEL=warn
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - observability
+    depends_on:
+      mimir:
+        condition: service_started
+      tempo:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  grafana-data:
+  tempo-data:
+  mimir-data:
